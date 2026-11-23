@@ -1,5 +1,6 @@
 # TotK Recomp
 THIS FORK IS SPECIFICALLY TO INCLUDE FIXES FOR AMD IN SHRINES. READ docs/shrine-performance FIRST
+
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
 > [!IMPORTANT]
