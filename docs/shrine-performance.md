@@ -22,6 +22,68 @@ and use a by-region dependency; this fix **still ends the pass and keeps the ful
 are enabled, the existing merge decision runs first, and layout retention applies only to non-merged barriers.
 No new Vulkan feature is required: retention only preserves images already tracked in the feedback layout.
 
+## Important: layout retention is not the whole shrine optimization
+
+If shrines are still slow with `shrine_barrier = 1`, this fork also includes upstream **barrier merging**. It targets
+another cost: ending and reopening render passes at the game's texture-invalidating barriers. Retaining layouts
+alone does not remove those pass breaks. On a build that contains both features, the combined opt-in setup is:
+
+```ini
+[performance]
+shrine_barrier = 1
+barrier_merge = 1
+```
+
+Add the keys to the existing section, not a second copy of it. Restart the game. No rebuild is needed to enable
+`barrier_merge` in a release that already includes it. The existing feedback-layout mode is required for merging.
+These switches do not lower resolution, shadow quality or other graphics settings. To isolate a visual problem,
+set only `barrier_merge = 0` and restart, leaving layout retention enabled.
+
+### What the history actually says
+
+- [`61a407b`](https://github.com/notmugi/totk-pc-recomp/commit/61a407b0e1f0bcd26caa31dc93eceba618e60379)
+  introduced `barrier_merge`. Its accompanying documentation explicitly names **Nachoyah Shrine's water** and
+  reports roughly **1,200 to 130 passes**, **10,000 to 150 layout transitions**, and **24.5 to 7.8 ms GPU time** in
+  the upstream test. These are upstream measurements, not measurements of this branch or a promised gain.
+- [`af13294`](https://github.com/notmugi/totk-pc-recomp/commit/af1329440d171ada7b0ded1627327138a90f3754)
+  guarded storage/vertex reads and 3D BC stand-ins, removed the per-draw storage scan while merging is disabled,
+  and documented the cross-pixel ordering caveat below. Both commits are present in the tested 0.5.1-rc1 base.
+- `barrier_merge` was **off by default at introduction**, and remains off in the inspected history through
+  `3c5ae128308ead14f8a3678aedfafdef7a91b6a7`. There is no default-on-to-off change for that key in that history.
+  The older custom 0.3.13/0.4.1 **layout-retention patch was unconditional**; it had no `shrine_barrier` switch.
+  That is a different optimization. This history cannot establish settings used by every private build or launcher.
+
+This establishes a documented shrine bottleneck and an existing optimization, **not the commit responsible for
+any particular user's regression**. Do not describe enabling merging as proof that a regression was bisected.
+
+### Possible visual artifacts, and the evidence behind the warning
+
+The original commit described a picture that looked the same to the eye but differed at edges by about one pixel
+in screenshot comparisons, with the difference not fully explained. The later source comment explains the risk:
+NVN's `ORDER_FRAGMENTS` orders accesses across pixels, whereas the in-pass Vulkan **by-region** dependency does not
+provide the same cross-region guarantee. A shader sampling a neighbouring region can therefore read a value whose
+write was not ordered by that dependency. The comment cites RADV as running the barrier for the whole target;
+that observation is not a portability guarantee for every driver or future release.
+
+Examples of what to watch for (possible symptoms, **not reproduced captures from this test**):
+
+- Water/reflection edges briefly flickering or showing square/tile-shaped discontinuities.
+- Decal edges, such as markings over a surface, showing a thin incorrect fringe or flickering patch.
+- Particle edges briefly looking broken or blocky where they overlap a rendered surface.
+
+No verified example images are included here. Do not label unrelated water/DLAA glitches as evidence of this
+particular issue. A symptom should disappear with only `barrier_merge` disabled before attributing it to merging.
+It is entirely possible to see no artifacts on a particular GPU/driver and scene.
+
+### Local user test, November 23, 2026
+
+The fix was adapted to the installed **0.5.1-rc1 base `3c5ae12`**, preserving its PGO toolchain/profile and current
+guest-code patches. The system used an **RX 7900 XTX with RADV, Mesa 26.3.1**. With layout retention enabled but
+merging disabled, the user reported about **75 FPS in a shrine**. After enabling `barrier_merge = 1`, the user
+reported **"everything looks fine."** No post-enable FPS figure or controlled A/B benchmark was supplied, so this
+records a positive visual report, not a measured performance recovery or all-scenes validation. The shrine name
+was not established; do not assume this was the upstream Nachoyah test.
+
 ## What was wasting work
 
 In `runtime/vk_exec.c`, `walk` handled ordinary guest `OP_BARRIER` records with `vk_exec_barrier`. That helper
@@ -118,9 +180,17 @@ For this branch: the harness passes at `-O0` and `-O2`; replacing retention with
 its retention assertion fail. The settings documentation check and Clang syntax checks of `vk_exec.c` and `cfg.c`
 pass. These are source-level checks, **not** a new gameplay or performance benchmark.
 
-Not run on this branch: a full game build, `--selftest`, `--probe-services`, `--probe-cfg`, `--probe-kernel`,
-`--probe-vkexec`, `--probe-nvn-tex`, `--probe-shader`, GPU validation, screenshots, or FPS/frametime comparisons.
-No installed game was modified or launched for this port.
+At initial publication, the main-based branch had not been built into a full game or installed. Subsequently, a
+local adaptation onto the user's exact 0.5.1-rc1 base was built and installed at their request: all runtime objects
+and install-side objects were rebuilt, and verified matching guest objects were reused. `--selftest`, `--probe-cfg`,
+`--probe-kernel` and the adapted source regression check passed. `--probe-services` reported the same one failure
+in both the stock and patched executables: `settings::detail::GetLanguageCode` was linked but absent from the
+probe's coverage list (1 of 9,392 checks). It is not reported as a passing service probe.
+
+The installation preserved save/profile paths and verified unchanged hashes of save/profile, mod and build-cache
+files. Only the executable and the explicitly enabled settings were replaced; backups were kept outside the game
+folder. The user subsequently ran the game; their visual report is recorded above. No GPU probes, Vulkan validation,
+screenshots or controlled FPS/frametime comparisons were performed for this adaptation.
 
 Before promoting the fix, follow [CONTRIBUTING.md](../CONTRIBUTING.md)'s runtime/rendering checks on the rebuilt
 binary. Compare whole runs with `TOTK_SHRINE_BARRIER=0` and `1`, keeping `TOTK_BARRIER_MERGE=0`, the same shrine
