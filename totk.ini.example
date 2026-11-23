@@ -103,6 +103,10 @@
 # the pixel a draw writes: a driver that runs it per screen tile can show flicker or squares at the edges of water, decals
 # or particles (report any). Needs the feedback layout (the default). Read at start. Default: 0.
 # barrier_merge = 0
+# Opt-in shrine optimization: keep feedback image layouts across guest barriers, while still ending the pass and
+# issuing the full memory dependency. Unlike barrier_merge, this does not use a weaker by-region barrier.
+# Transfers, compute and submission ends still restore GENERAL; frame dumps use the old path. Read at start.
+# shrine_barrier = 0
 # Build known pipelines ahead of time.
 # pipe_prebuild = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).

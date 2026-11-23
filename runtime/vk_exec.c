@@ -137,6 +137,7 @@ static void state_reset(VkExec *ex) {
     ex->barrier_at = -1;
     ex->oq_open = -1;
     ex->bmerge = (uint8_t)vk_exec_barrier_merge_on();
+    ex->retain_feedback = (uint8_t)cfg_bool("TOTK_SHRINE_BARRIER");
     vk_exec_dirty_all(ex);
 }
 
@@ -641,8 +642,8 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
                                    .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
 }
 
-// Full barrier. The images in the feedback layout become want[] (pass begin) or none (every other barrier): the others
-// go back to GENERAL and the new ones leave it, in the same command.
+// Full barrier. The images in the feedback layout become want[]: pass begin selects its targets, a guest barrier
+// may keep the current set, and vk_exec_barrier resets it. The others go back to GENERAL and the new ones leave it.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
     vk_exec_pass_end(ex);
     ex->pass_storage = ex->pass_merged = 0;   // barrier_merge: every pass begins behind this barrier
@@ -673,6 +674,14 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 }
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
+
+// A guest barrier orders accesses, but does not require a layout change. Keep learned feedback targets ready for
+// the next pass instead of round-tripping through GENERAL. Transfers, dispatches and submission ends still reset.
+static void guest_barrier(VkExec *ex) {
+    vk_exec_pass_end(ex);   // pass-end copies may change the tracked set: read it only after ending the pass
+    if (!ex->retain_feedback || vk_dump_armed) vk_exec_barrier(ex);   // diagnostic copies require GENERAL
+    else barrier_to(ex, ex->fbl_img, ex->fbl_aspect, ex->nfbl);
+}
 
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
@@ -1096,7 +1105,7 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
             if (ex->in_pass) ex->fr.pass_end_barrier++;
             if (rt_trace & RT_TRACE_GFX)
                 for (int i = 0; i < 8; i++) ex->fr.barrier_bit[i] += (uint32_t)((const p_barrier *)a)->bits >> i & 1;
-            vk_exec_barrier(ex);
+            guest_barrier(ex);
             break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) ex->fr.draws_seen++, ex->split_draws++;

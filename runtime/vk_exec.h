@@ -156,10 +156,11 @@ typedef struct VkExec {
 
     // Feedback loops (vk.h VkCtx.feedback, vk_exec_draw.c feedback_prepare). Learned targets are attached in
     // ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; they stay in it across consecutive passes and go back to GENERAL at the next
-    // full barrier that is not a pass begin.
+    // full barrier that is neither a pass begin nor a layout-preserving guest barrier.
     VkImage fbl_img[9];                  // images in the feedback layout now
     VkImageAspectFlags fbl_aspect[9];
     int nfbl;
+    uint8_t retain_feedback;             // TOTK_SHRINE_BARRIER: retain layouts at guest barriers, read at reset
     uint32_t fbl_mask;                   // attachments of the open pass in that layout: bit i colour i, bit 8 depth
     uint32_t fb_dirty;                   // attachments of the open pass written by a draw or clear since the pass began
                                          // or the last in-pass barrier
