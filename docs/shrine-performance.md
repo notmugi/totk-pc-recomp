@@ -148,6 +148,124 @@ For a packaged Linux PGO release:
 - Before deploying, close the game and back up the existing executable **outside** its folder. Preserve its name,
   launcher path, settings and save/profile location. Do not create a new profile or move the installation.
 
+## Updating a Linux PGO AppImage
+
+An AppImage update and an installed-game update are separate operations. Replacing the installer alone does not
+replace an existing `totk` executable. Keep the same installer filename/path if the installation's rebuild record
+points there; do not rename the game folder or change its profile path.
+
+### 1. Back up and extract the exact release
+
+Close the installer before replacement. Work under an ignored `build/` directory, outside the game installation.
+Set `IMAGE` to the existing installer and use a fresh work directory for each release:
+
+```sh
+IMAGE=/absolute/path/to/TotK-Setup-0.5.1-rc1-x86_64-pgo.AppImage
+WORK="$PWD/build/appimage-shrine-update"
+mkdir -p "$WORK/package" "$WORK/work"
+export TMPDIR="$WORK/work"
+cp -p "$IMAGE" "$WORK/original.AppImage"
+sha256sum "$WORK/original.AppImage"
+(cd "$WORK/package" && "$WORK/original.AppImage" --appimage-extract)
+PKG="$WORK/package/squashfs-root"
+cat "$PKG/VERSION"
+```
+
+Record a file-hash and symlink-target manifest of the untouched payload. Obtain the source revision named by
+`VERSION`, then apply/adapt the shrine patch to that source, not to whichever `main` happens to exist today.
+For 0.5.1-rc1 the base was `3c5ae12`; preserve its null-attachment helpers when resolving the insertion beside
+`vk_exec_barrier`. Keep the source and test changes described earlier in this guide.
+
+### 2. Rebuild both runtime variants with the matching package toolchain
+
+Set `SRC` to the patched source checkout, `GEN` to the matching local generated-code directory, and `EXEFS`,
+`ROMFS`, `PROFILE` to the existing installation's paths. These are build inputs/default paths, not instructions
+to copy, move or edit saves. This release's builder requires `GEN/layout.json` even for a runtime-only build.
+Use the release's packaged builder so its PGO/code-layout flags stay intact:
+
+```sh
+for CPU in v3 v2; do
+    python3 "$PKG/tools/build_game.py" \
+        --version v143 --cpu "$CPU" --jobs 8 \
+        --make-runtime-lib --runtime "$SRC/runtime" \
+        --gen "$GEN" --out "$WORK/rt-$CPU" \
+        --toolchain "$PKG/llvm" --sysroot "$PKG/llvm/sysroot" \
+        --deps "$PKG/runtime/deps" --pgo "$PKG/data/pgo-v143.profdata" \
+        --exefs "$EXEFS" --romfs "$ROMFS" --profile "$PROFILE" || exit 1
+done
+```
+
+**Packaging trap:** the shipped sysroot may have headers pruned because players normally compile only guest code
+and install-side sources. A full runtime rebuild can therefore fail on missing SDL/Opus/VPX headers. Restore the
+missing headers from the exact matching full release SDK in a separate build-toolchain copy; check its library
+versions/hashes against the package first. Do not substitute arbitrary host headers or ship the expanded SDK by
+accident. In that case, point the build flags above at the expanded build copy while keeping `PKG` as the clean
+shipping payload.
+
+Decide defaults **before** building. The public branch keeps both switches opt-in. The user's custom AppImage
+sets `BARRIER_MERGE` and `SHRINE_BARRIER` metadata defaults in `runtime/cfg.c` to `1`, with matching comments in
+`totk.ini.example`. This makes both available without rewriting an existing config. Explicit existing values of
+`0` still win; this is intentional. Document the experimental artifact caveat rather than silently removing the
+ability to disable merging.
+
+### 3. Stage the rebuilt payload
+
+```sh
+cp "$WORK/rt-v3/libtotkrt.a" "$PKG/runtime/libtotkrt.a"
+cp "$WORK/rt-v2/libtotkrt.a" "$PKG/runtime/libtotkrt-v2.a"
+cp "$SRC/runtime/vk_exec.h" "$PKG/runtime/vk_exec.h"
+```
+
+Copy any other headers/install-side sources your adaptation actually changed. For this port, only `vk_exec.h`
+changed among the packaged runtime headers; `cfg.c` and `vk_exec.c` are compiled into the archives, not shipped
+as install-side sources. Include the guide as `SHRINE-FIXES.md`, update the example's defaults, and give `VERSION`
+a custom suffix (the delivered build uses `0.5.1-rc1+3c5ae12-shrine`). Preserve the original profiles, generator,
+compiler, dependencies and shader translator. A changed version identifies the custom installer to its step cache.
+
+### 4. Repack, extract again, and verify before replacement
+
+Use the pinned appimagetool and type-2 runtime described by `tools/make_release_linux.py`, not an arbitrary newer
+release. For a repack of an existing image, its runtime prefix can be reused:
+
+```sh
+OFFSET=$("$WORK/original.AppImage" --appimage-offset)
+head -c "$OFFSET" "$WORK/original.AppImage" > "$WORK/runtime-prefix"
+# APPIMAGETOOL is the executable AppRun of an extracted, pinned appimagetool package.
+ARCH=x86_64 "$APPIMAGETOOL" --no-appstream \
+    --runtime-file "$WORK/runtime-prefix" "$PKG" "$WORK/patched.AppImage"
+mkdir "$WORK/verify"
+(cd "$WORK/verify" && "$WORK/patched.AppImage" --appimage-extract)
+```
+
+Compare every extracted file hash and symlink target against the staged payload, then compare the staged payload
+against the original manifest. For the delivered 0.5.1 update, the entire change list was:
+
+- `runtime/libtotkrt.a`, `runtime/libtotkrt-v2.a`, `runtime/vk_exec.h`
+- `VERSION`, `totk.ini.example`, `SHRINE-FIXES.md`
+
+Run the source regression check. Require the v2 ISA check to pass, and link a proof executable using matching
+local guest/install-side objects and the rebuilt runtime with **whole-archive**. Run self-test/config/services
+checks outside the live installation with an explicit disposable probe profile. Do not claim a full GPU test from
+these checks. The delivered repack passed payload verification, v3 proof self-test/config checks and the v2 build's
+ISA check; the existing service-probe coverage failure is recorded in the validation section below.
+
+Only after verification, copy the new image to a temporary filename **beside the destination**, compare its hash
+with `patched.AppImage`, preserve executable permissions, and atomically rename it over `IMAGE`. Keep
+`original.AppImage` in the external work directory for rollback. Do not overwrite the only backup on a later run.
+
+### 5. Use the updated installer without changing saves
+
+Close the game, back up its executable outside the installation, then run the updated AppImage and select the
+**existing installation directory**. Let setup rebuild/relink the game; do not copy an old executable over the
+new runtime or select a different profile. Keep the normal launcher name and save path. Existing explicit
+`barrier_merge = 0` or `shrine_barrier = 0` must be changed to `1` if enabling both is desired; otherwise leave the
+rest of the settings alone. A future stock installer can replace this custom runtime, so repeat the port for each
+new release rather than assuming the fix persists.
+
+The November 23 repack replaced the user's existing 0.5.1-rc1 PGO AppImage in place, with SHA-256
+`494c7f7c7f4f2a0f47bc88dca44aebc9422c2a65e72766ad437edf2d10d7953a`. It did not run setup or touch saves; the installed
+game had already been patched separately. This hash identifies that particular artifact, not future rebuilds.
+
 ## Regression check (no game, window or GPU)
 
 Install Clang, Vulkan headers and Vulkan Memory Allocator headers, then run from the repository root:
